@@ -1,0 +1,6 @@
+{
+  "name": "MathVortex",
+  "description": "Dynamic math battle and problem-solving arena for ages 10 to 20 featuring Speed Sprints, AI Duels, Target 24, and Formula Dungeons.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
