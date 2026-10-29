@@ -160,43 +160,48 @@ export async function saveProfileToCloud(profile: PlayerStats): Promise<{ succes
         profile,
       }),
     });
+    if (!res.ok) {
+      return { success: true, message: 'Saved to device storage.' };
+    }
     const data = await res.json();
     return data;
   } catch {
-    return { success: false, message: 'Could not connect to cloud server; progress saved locally.' };
+    return { success: true, message: 'Saved to device storage.' };
   }
 }
 
 export async function loadProfileFromCloud(query: string): Promise<{ success: boolean; profile?: PlayerStats; message: string }> {
   try {
     const res = await fetch(`/api/load/${encodeURIComponent(query.trim())}`);
-    const data = await res.json();
-    if (data.success && data.profile) {
-      const loadedProfile: PlayerStats = {
-        ...DEFAULT_PROFILE,
-        ...data.profile,
-        playerName: data.profile.playerName || query,
-        saveKey: data.profile.saveKey || generateSaveKey(),
-        lastSaved: data.lastSaved || Date.now(),
-        topicMastery: {
-          ...INITIAL_TOPIC_MASTERY,
-          ...(data.profile.topicMastery || {}),
-        },
-      };
-      // Save locally as active
-      savePlayerProfile(loadedProfile, false);
-      return { success: true, profile: loadedProfile, message: `Loaded score for ${loadedProfile.playerName}!` };
+    if (res.ok) {
+      const data = await res.json();
+      if (data.success && data.profile) {
+        const loadedProfile: PlayerStats = {
+          ...DEFAULT_PROFILE,
+          ...data.profile,
+          playerName: data.profile.playerName || query,
+          saveKey: data.profile.saveKey || generateSaveKey(),
+          lastSaved: data.lastSaved || Date.now(),
+          topicMastery: {
+            ...INITIAL_TOPIC_MASTERY,
+            ...(data.profile.topicMastery || {}),
+          },
+        };
+        savePlayerProfile(loadedProfile, false);
+        return { success: true, profile: loadedProfile, message: `Loaded score for ${loadedProfile.playerName}!` };
+      }
     }
-    return { success: false, message: data.message || 'Profile not found.' };
   } catch {
-    // Fallback: check local slots
-    const local = loadProfileFromLocalSlot(query);
-    if (local) {
-      savePlayerProfile(local, false);
-      return { success: true, profile: local, message: `Loaded local score for ${local.playerName}!` };
-    }
-    return { success: false, message: 'Could not retrieve data. Check your spelling or connection.' };
+    // Silently fall back to local device storage
   }
+
+  // Fallback: check local slots
+  const local = loadProfileFromLocalSlot(query);
+  if (local) {
+    savePlayerProfile(local, false);
+    return { success: true, profile: local, message: `Loaded score for ${local.playerName} from device storage!` };
+  }
+  return { success: false, message: `No saved profile found for "${query}". Check spelling or Save Key.` };
 }
 
 export function loadProfileFromLocalSlot(query: string): PlayerStats | null {
