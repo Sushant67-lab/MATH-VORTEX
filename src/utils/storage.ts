@@ -245,6 +245,32 @@ export function exportProfileToFile(profile: PlayerStats) {
   }
 }
 
+export function generateSaveCode(profile: PlayerStats): string {
+  try {
+    const json = JSON.stringify(profile);
+    if (typeof window !== 'undefined' && window.btoa) {
+      return window.btoa(encodeURIComponent(json));
+    }
+    return Buffer.from(encodeURIComponent(json)).toString('base64');
+  } catch {
+    return '';
+  }
+}
+
+export function restoreFromSaveCode(code: string): PlayerStats | null {
+  try {
+    let json = '';
+    if (typeof window !== 'undefined' && window.atob) {
+      json = decodeURIComponent(window.atob(code.trim()));
+    } else {
+      json = decodeURIComponent(Buffer.from(code.trim(), 'base64').toString('utf-8'));
+    }
+    return parseProfileFromFile(json);
+  } catch {
+    return null;
+  }
+}
+
 export function parseProfileFromFile(fileContent: string): PlayerStats | null {
   try {
     const parsed = JSON.parse(fileContent);

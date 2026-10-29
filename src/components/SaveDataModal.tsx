@@ -18,13 +18,16 @@ import {
   History,
   KeyRound,
   ArrowRight,
+  FileCode,
 } from 'lucide-react';
 import { PlayerStats, SavedSlotSummary } from '../types/math';
 import {
   exportProfileToFile,
+  generateSaveCode,
   getSavedSlots,
   loadProfileFromCloud,
   parseProfileFromFile,
+  restoreFromSaveCode,
   savePlayerProfile,
   saveProfileToCloud,
 } from '../utils/storage';
@@ -50,6 +53,7 @@ export const SaveDataModal: React.FC<SaveDataModalProps> = ({
   const [isLoadingProfile, setIsLoadingProfile] = useState<boolean>(false);
   const [statusMessage, setStatusMessage] = useState<{ text: string; type: 'success' | 'error' } | null>(null);
   const [copiedKey, setCopiedKey] = useState<boolean>(false);
+  const [copiedCode, setCopiedCode] = useState<boolean>(false);
   const [savedSlots, setSavedSlots] = useState<SavedSlotSummary[]>([]);
   const [leaderboard, setLeaderboard] = useState<any[]>([]);
   const [isLoadingLeaderboard, setIsLoadingLeaderboard] = useState<boolean>(false);
@@ -74,16 +78,32 @@ export const SaveDataModal: React.FC<SaveDataModalProps> = ({
     setIsLoadingLeaderboard(true);
     try {
       const res = await fetch('/api/leaderboard');
-      const data = await res.json();
-      if (data.success && Array.isArray(data.leaderboard)) {
-        setLeaderboard(data.leaderboard);
+      if (res.ok) {
+        const data = await res.json();
+        if (data.success && Array.isArray(data.leaderboard)) {
+          setLeaderboard(data.leaderboard);
+          setIsLoadingLeaderboard(false);
+          return;
+        }
       }
     } catch {
-      // offline fallback
-      setLeaderboard([]);
-    } finally {
-      setIsLoadingLeaderboard(false);
+      // ignore
     }
+
+    // Local fallback leaderboard from saved slots
+    const slots = getSavedSlots();
+    const localLeaderboard = slots.map(s => ({
+      playerName: s.playerName,
+      saveKey: s.saveKey,
+      level: s.level,
+      sprintHighScore: s.sprintHighScore,
+      duelsWon: playerProfile.duelsWon,
+      target24Solved: playerProfile.target24Solved,
+      totalCorrect: playerProfile.totalCorrect,
+      lastSaved: s.lastSaved,
+    }));
+    setLeaderboard(localLeaderboard);
+    setIsLoadingLeaderboard(false);
   };
 
   const handleUpdateName = () => {
@@ -109,33 +129,22 @@ export const SaveDataModal: React.FC<SaveDataModalProps> = ({
       lastSaved: Date.now(),
     };
 
-    savePlayerProfile(updated, false);
+    savePlayerProfile(updated, true);
     onUpdateProfile(updated);
-
-    const cloudRes = await saveProfileToCloud(updated);
     setIsSaving(false);
+    soundFx.playCorrect();
 
-    if (cloudRes.success) {
-      soundFx.playCorrect();
-      setStatusMessage({
-        text: `Success! Score & progress saved. You can restore anytime with username "${nameToUse}" or Key "${updated.saveKey}".`,
-        type: 'success',
-      });
-      setSavedSlots(getSavedSlots());
-    } else {
-      soundFx.playClick();
-      setStatusMessage({
-        text: `Progress saved to device storage! (Cloud sync: ${cloudRes.message})`,
-        type: 'success',
-      });
-      setSavedSlots(getSavedSlots());
-    }
+    setStatusMessage({
+      text: `Progress securely saved for "${nameToUse}"! Your high score (${updated.sprintHighScore} pts) and Level ${updated.level} are saved.`,
+      type: 'success',
+    });
+    setSavedSlots(getSavedSlots());
   };
 
   const handleLoadQuery = async () => {
     const query = loadQueryInput.trim();
     if (!query) {
-      setStatusMessage({ text: 'Please enter your Player Name or Save Key.', type: 'error' });
+      setStatusMessage({ text: 'Please enter your Player Name, Save Key, or paste a Save Code.', type: 'error' });
       return;
     }
 
@@ -143,6 +152,23 @@ export const SaveDataModal: React.FC<SaveDataModalProps> = ({
     setStatusMessage(null);
     soundFx.playClick();
 
+    // 1. Try decoding as portable base64 Save Code first
+    const fromCode = restoreFromSaveCode(query);
+    if (fromCode) {
+      setIsLoadingProfile(false);
+      savePlayerProfile(fromCode, true);
+      onUpdateProfile(fromCode);
+      setPlayerNameInput(fromCode.playerName);
+      soundFx.playVictory();
+      setStatusMessage({
+        text: `Restored progress for ${fromCode.playerName}! High score: ${fromCode.sprintHighScore} pts · Level ${fromCode.level}.`,
+        type: 'success',
+      });
+      setSavedSlots(getSavedSlots());
+      return;
+    }
+
+    // 2. Try loading by Key or Username
     const result = await loadProfileFromCloud(query);
     setIsLoadingProfile(false);
 
@@ -158,7 +184,7 @@ export const SaveDataModal: React.FC<SaveDataModalProps> = ({
     } else {
       soundFx.playWrong();
       setStatusMessage({
-        text: result.message || 'No saved score found. Please double-check your spelling or Key.',
+        text: result.message || 'No saved score found. Check your spelling or Save Key.',
         type: 'error',
       });
     }
@@ -188,6 +214,19 @@ export const SaveDataModal: React.FC<SaveDataModalProps> = ({
     setCopiedKey(true);
     soundFx.playClick();
     setTimeout(() => setCopiedKey(false), 2000);
+  };
+
+  const handleCopySaveCode = () => {
+    if (!navigator.clipboard) return;
+    const code = generateSaveCode(playerProfile);
+    navigator.clipboard.writeText(code);
+    setCopiedCode(true);
+    soundFx.playClick();
+    setStatusMessage({
+      text: 'Portable Save Code copied to clipboard! Paste this code on any device to restore your scores.',
+      type: 'success',
+    });
+    setTimeout(() => setCopiedCode(false), 2000);
   };
 
   const handleExportFile = () => {
@@ -245,7 +284,7 @@ export const SaveDataModal: React.FC<SaveDataModalProps> = ({
             <Cloud className="w-5 h-5 text-cyan-400" />
             <span className="text-base font-bold text-white">Save & Restore Progress</span>
             <span className="text-xs text-slate-500">·</span>
-            <span className="text-xs text-slate-400">Keep your scores across sessions</span>
+            <span className="text-xs text-slate-400">Keep your score across sessions</span>
           </div>
 
           <button
@@ -412,28 +451,52 @@ export const SaveDataModal: React.FC<SaveDataModalProps> = ({
                   className="w-full flex items-center justify-center gap-2 py-3.5 bg-cyan-500 hover:bg-cyan-400 disabled:opacity-50 text-slate-950 font-bold text-sm rounded-xl shadow-lg shadow-cyan-500/20 transition-all hover:scale-[1.01] active:scale-[0.99]"
                 >
                   <Cloud className="w-5 h-5" />
-                  <span>{isSaving ? 'Saving to Cloud & Device...' : 'Save My Score & Progress Now'}</span>
+                  <span>{isSaving ? 'Saving Progress...' : 'Save My Score & Progress Now'}</span>
                 </button>
                 <p className="text-xs text-slate-400">
-                  Your progress will be securely saved. When you reach the app again, your high scores and medals will be right here!
+                  Your progress is stored safely. Whenever you return to MathVortex, your scores, badges, and levels will load automatically!
                 </p>
               </div>
 
-              {/* Backup File Export */}
-              <div className="p-4 rounded-xl bg-slate-950/40 border border-slate-800 flex items-center justify-between gap-4">
-                <div>
-                  <div className="text-xs font-semibold text-white">Offline JSON Backup File</div>
-                  <div className="text-[11px] text-slate-400">
-                    Download a copy of your progress file to keep on your computer or phone.
+              {/* Portable Save Code & File Export */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className="p-4 rounded-xl bg-slate-950/40 border border-slate-800 flex flex-col justify-between gap-3">
+                  <div>
+                    <div className="text-xs font-semibold text-white flex items-center gap-1.5">
+                      <FileCode className="w-4 h-4 text-cyan-400" />
+                      <span>Copy Save Code</span>
+                    </div>
+                    <div className="text-[11px] text-slate-400 mt-1">
+                      One-click portable code you can paste on another device to restore all progress.
+                    </div>
                   </div>
+                  <button
+                    onClick={handleCopySaveCode}
+                    className="flex items-center justify-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-xs font-semibold text-cyan-300 rounded-lg transition-colors"
+                  >
+                    {copiedCode ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                    <span>{copiedCode ? 'Code Copied!' : 'Copy Code'}</span>
+                  </button>
                 </div>
-                <button
-                  onClick={handleExportFile}
-                  className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-xs font-semibold text-slate-200 rounded-lg transition-colors whitespace-nowrap"
-                >
-                  <Download className="w-3.5 h-3.5" />
-                  <span>Download File</span>
-                </button>
+
+                <div className="p-4 rounded-xl bg-slate-950/40 border border-slate-800 flex flex-col justify-between gap-3">
+                  <div>
+                    <div className="text-xs font-semibold text-white flex items-center gap-1.5">
+                      <Download className="w-4 h-4 text-cyan-400" />
+                      <span>Download JSON Backup</span>
+                    </div>
+                    <div className="text-[11px] text-slate-400 mt-1">
+                      Download a `.json` backup file directly to your computer or phone.
+                    </div>
+                  </div>
+                  <button
+                    onClick={handleExportFile}
+                    className="flex items-center justify-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-xs font-semibold text-slate-200 rounded-lg transition-colors"
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                    <span>Download File</span>
+                  </button>
+                </div>
               </div>
             </div>
           )}
@@ -446,7 +509,7 @@ export const SaveDataModal: React.FC<SaveDataModalProps> = ({
                 <div>
                   <h3 className="text-sm font-bold text-white mb-1">Retrieve Your Saved Score</h3>
                   <p className="text-xs text-slate-400">
-                    Enter the Player Name or 7-character Save Key (e.g., <code className="text-cyan-300 font-mono">VTX-1001</code>) you used previously.
+                    Enter your <strong>Player Name</strong>, <strong>Save Key</strong> (e.g. <code className="text-cyan-300 font-mono">VTX-1001</code>), or paste a <strong>Save Code</strong>.
                   </p>
                 </div>
 
@@ -458,8 +521,8 @@ export const SaveDataModal: React.FC<SaveDataModalProps> = ({
                       value={loadQueryInput}
                       onChange={e => setLoadQueryInput(e.target.value)}
                       onKeyDown={e => e.key === 'Enter' && handleLoadQuery()}
-                      placeholder="Enter Player Name or Save Key"
-                      className="w-full pl-9 pr-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-sm text-white placeholder-slate-500 focus:outline-none focus:border-cyan-400 uppercase"
+                      placeholder="Enter Player Name, Save Key, or Paste Code"
+                      className="w-full pl-9 pr-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-sm text-white placeholder-slate-500 focus:outline-none focus:border-cyan-400"
                     />
                   </div>
                   <button
@@ -562,7 +625,7 @@ export const SaveDataModal: React.FC<SaveDataModalProps> = ({
               <div className="flex items-center justify-between text-xs text-slate-400">
                 <span className="flex items-center gap-1.5 font-semibold text-white">
                   <Trophy className="w-4 h-4 text-amber-400" />
-                  <span>Global Saved Scores</span>
+                  <span>Saved Scholar Scores</span>
                 </span>
                 <button
                   onClick={fetchLeaderboard}
@@ -579,7 +642,7 @@ export const SaveDataModal: React.FC<SaveDataModalProps> = ({
                 </div>
               ) : leaderboard.length === 0 ? (
                 <div className="py-8 text-center text-xs text-slate-400">
-                  No saved scores in the cloud database yet. Click "Save My Score" to claim the top spot!
+                  No saved scores recorded yet. Click "Save My Score" to claim the top spot!
                 </div>
               ) : (
                 <div className="space-y-2">
